@@ -40,15 +40,17 @@ DXCAM_TARGET_FPS = 60  # Target FPS for DXcam
 # Object Tracker Class
 #############################################################
 
-class SimpleTracker:
-    """Simple object tracker to reduce detection flicker"""
+class EnhancedTracker:
+    """Improved object tracker to reduce detection flicker"""
 
-    def __init__(self, max_disappeared=5, iou_threshold=0.3):
+    def __init__(self, max_disappeared=7, iou_threshold=0.3,
+                 maintain_threshold=0.15, alpha=0.7):
         self.next_object_id = 0
-        self.objects = {}  # Format: {ID: (box, score, class_id, disappeared_count)}
-        self.disappeared = {}
+        self.objects = {}  # Format: {ID: (box, score, class_id, disappeared_count, velocity)}
         self.max_disappeared = max_disappeared
         self.iou_threshold = iou_threshold
+        self.maintain_threshold = maintain_threshold  # Lower threshold for maintaining objects
+        self.alpha = alpha  # Smoothing factor (0.7 = 70% new + 30% old)
 
     def _calculate_iou(self, boxA, boxB):
         """Calculate IoU between two boxes"""
@@ -69,13 +71,52 @@ class SimpleTracker:
         iou = interArea / float(boxAArea + boxBArea - interArea)
         return iou
 
+    def _smooth_box(self, old_box, new_box):
+        """Apply temporal smoothing to bounding box"""
+        return [
+            old_box[0] * (1 - self.alpha) + new_box[0] * self.alpha,
+            old_box[1] * (1 - self.alpha) + new_box[1] * self.alpha,
+            old_box[2] * (1 - self.alpha) + new_box[2] * self.alpha,
+            old_box[3] * (1 - self.alpha) + new_box[3] * self.alpha
+        ]
+
+    def _calculate_velocity(self, old_box, new_box):
+        """Calculate velocity as movement between frames"""
+        old_center_x = (old_box[0] + old_box[2]) / 2
+        old_center_y = (old_box[1] + old_box[3]) / 2
+        new_center_x = (new_box[0] + new_box[2]) / 2
+        new_center_y = (new_box[1] + new_box[3]) / 2
+
+        return [new_center_x - old_center_x, new_center_y - old_center_y]
+
+    def _predict_box(self, box, velocity):
+        """Predict new box position based on velocity"""
+        if velocity is None:
+            return box
+
+        dx, dy = velocity
+        return [
+            box[0] + dx,
+            box[1] + dy,
+            box[2] + dx,
+            box[3] + dy
+        ]
+
     def update(self, detections):
         """Update tracker with new detections"""
         # If no detections, mark all existing objects as disappeared
         if len(detections) == 0:
             for object_id in list(self.objects.keys()):
-                box, score, class_id, disappeared_count = self.objects[object_id]
-                self.objects[object_id] = (box, score, class_id, disappeared_count + 1)
+                box, score, class_id, disappeared_count, velocity = self.objects[object_id]
+
+                # Predict new position based on velocity
+                if velocity is not None and disappeared_count < self.max_disappeared // 2:
+                    predicted_box = self._predict_box(box, velocity)
+                    self.objects[object_id] = (predicted_box, score * 0.9, class_id,
+                                               disappeared_count + 1, velocity)
+                else:
+                    self.objects[object_id] = (box, score * 0.9, class_id,
+                                               disappeared_count + 1, velocity)
 
                 # Remove objects that have disappeared for too long
                 if self.objects[object_id][3] > self.max_disappeared:
@@ -87,12 +128,21 @@ class SimpleTracker:
         matched_indices = set()
         unmatched_detections = []
 
+        # For prediction, create a version of objects with predicted positions
+        predicted_objects = {}
+        for object_id, (box, score, class_id, disappeared, velocity) in self.objects.items():
+            if velocity is not None and disappeared < self.max_disappeared // 2:
+                predicted_box = self._predict_box(box, velocity)
+                predicted_objects[object_id] = (predicted_box, score, class_id, disappeared, velocity)
+            else:
+                predicted_objects[object_id] = (box, score, class_id, disappeared, velocity)
+
         # Try to match new detections with existing objects
         for i, (box, score, class_id) in enumerate(detections):
             max_iou = self.iou_threshold
             match_id = None
 
-            for object_id, (existing_box, existing_score, existing_class, _) in self.objects.items():
+            for object_id, (existing_box, existing_score, existing_class, _, _) in predicted_objects.items():
                 # Only match objects of the same class
                 if class_id != existing_class:
                     continue
@@ -104,25 +154,49 @@ class SimpleTracker:
                     match_id = object_id
 
             if match_id is not None:
+                # Get the original (non-predicted) box and velocity
+                orig_box, orig_score, orig_class, disappeared, orig_velocity = self.objects[match_id]
+
+                # Calculate velocity
+                velocity = self._calculate_velocity(orig_box, box)
+
+                # Apply smoothing to reduce jitter
+                smoothed_box = self._smooth_box(orig_box, box)
+
                 # Update the matched object with new detection
-                self.objects[match_id] = (box, score, class_id, 0)  # Reset disappeared counter
+                # Use higher score between new detection and existing (with decay)
+                updated_score = max(score, orig_score * 0.95)
+
+                self.objects[match_id] = (smoothed_box, updated_score, class_id, 0, velocity)
                 matched_indices.add(match_id)
             else:
-                unmatched_detections.append((box, score, class_id))
+                # Only add new objects if they meet the threshold
+                if score >= self.maintain_threshold:
+                    unmatched_detections.append((box, score, class_id))
 
         # Check for objects that have disappeared
         for object_id in list(self.objects.keys()):
             if object_id not in matched_indices:
-                box, score, class_id, disappeared_count = self.objects[object_id]
-                self.objects[object_id] = (box, score, class_id, disappeared_count + 1)
+                box, score, class_id, disappeared_count, velocity = self.objects[object_id]
 
-                # Remove objects that have disappeared for too long
-                if self.objects[object_id][3] > self.max_disappeared:
+                # Apply prediction for recently disappeared objects
+                if velocity is not None and disappeared_count < self.max_disappeared // 2:
+                    predicted_box = self._predict_box(box, velocity)
+                    # Reduce confidence gradually
+                    self.objects[object_id] = (predicted_box, score * 0.9, class_id,
+                                               disappeared_count + 1, velocity)
+                else:
+                    self.objects[object_id] = (box, score * 0.9, class_id,
+                                               disappeared_count + 1, velocity)
+
+                # Remove objects that have disappeared for too long or have very low confidence
+                if (self.objects[object_id][3] > self.max_disappeared or
+                        self.objects[object_id][1] < self.maintain_threshold * 0.5):
                     del self.objects[object_id]
 
         # Register new objects
         for box, score, class_id in unmatched_detections:
-            self.objects[self.next_object_id] = (box, score, class_id, 0)
+            self.objects[self.next_object_id] = (box, score, class_id, 0, None)  # No velocity yet
             self.next_object_id += 1
 
         return self.objects
@@ -158,22 +232,41 @@ class DetectionThread(QThread):
         # Set execution providers based on CUDA preference
         if self.use_cuda:
             try:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                # More explicit provider configuration
+                providers = [
+                    ('CUDAExecutionProvider', {
+                        'device_id': 0,
+                        'gpu_mem_limit': 4 * 1024 * 1024 * 1024,  # 4GB
+                        'arena_extend_strategy': 'kNextPowerOfTwo',
+                    }),
+                    'CPUExecutionProvider'
+                ]
+
                 self.session = ort.InferenceSession(self.model_path, providers=providers)
-                self.cuda_available = True
-                print("CUDA initialization successful")
+
+                # Verify the active provider
+                active_provider = self.session.get_providers()[0]
+                if 'CUDA' in active_provider:
+                    self.cuda_available = True
+                    print(f"CUDA initialization successful - Using provider: {active_provider}")
+                else:
+                    print(f"Warning: CUDA requested but not used. Active provider: {active_provider}")
+                    self.cuda_available = False
+
             except Exception as e:
                 print(f"CUDA initialization failed: {e}")
                 print("Falling back to CPU")
-                self.session = ort.InferenceSession(self.model_path)
+                self.session = ort.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
                 self.cuda_available = False
         else:
             # CPU only
-            self.session = ort.InferenceSession(self.model_path)
+            self.session = ort.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
             self.cuda_available = False
 
         # Get input details
         self.input_name = self.session.get_inputs()[0].name
+        print(f"Model input name: {self.input_name}")
+        print(f"Active providers: {self.session.get_providers()}")
 
     def set_frame(self, frame):
         """Set frame to be processed"""
@@ -327,8 +420,13 @@ class DetectionOverlay(QMainWindow):
         # Initialize model and screen capture in separate thread
         self.init_processing_thread()
 
-        # Initialize tracker
-        self.tracker = SimpleTracker(max_disappeared=5, iou_threshold=0.3)
+        # Initialize tracker with enhanced parameters
+        self.tracker = EnhancedTracker(
+            max_disappeared=7,  # Increased from 5
+            iou_threshold=0.3,  # Same as before
+            maintain_threshold=0.15,  # Lower threshold for maintaining existing objects
+            alpha=0.7  # Smoothing factor
+        )
 
         # Start processing timer
         self.start_processing()
@@ -478,7 +576,7 @@ class DetectionOverlay(QMainWindow):
         painter.setFont(font)
 
         # Draw info panel background
-        painter.fillRect(5, 5, 350, 170, QColor(0, 0, 0, 180))
+        painter.fillRect(5, 5, 350, 190, QColor(0, 0, 0, 180))  # Made taller to accommodate new info
 
         # Draw stats text
         painter.setPen(QColor(255, 50, 50))
@@ -489,14 +587,15 @@ class DetectionOverlay(QMainWindow):
         painter.drawText(10, 110, f"Display Mode: {self.display_mode} (D to change)")
         painter.drawText(10, 130, f"Screen: {self.screen_width}x{self.screen_height}")
         painter.drawText(10, 150, f"Confidence: {self.conf_threshold:.2f} (↑/↓ to adjust)")
+        painter.drawText(10, 170, f"Tracking: Enhanced (reduced flickering)")
 
         # Display CUDA status with appropriate color
         if self.detection_thread.cuda_available:
             painter.setPen(QColor(50, 255, 50))  # Green for CUDA enabled
-            painter.drawText(10, 170, "CUDA: Enabled")
+            painter.drawText(10, 190, "CUDA: Enabled")
         else:
             painter.setPen(QColor(255, 255, 50))  # Yellow for CPU only
-            painter.drawText(10, 170, "CUDA: Disabled (CPU mode)")
+            painter.drawText(10, 190, "CUDA: Disabled (CPU mode)")
 
     def draw_detections(self, painter):
         """Draw all detected objects"""
@@ -581,6 +680,22 @@ class DetectionOverlay(QMainWindow):
 #############################################################
 
 def main():
+    # Diagnostic check for CUDA availability
+    print("===== ONNX Runtime GPU Diagnostic =====")
+    import onnxruntime as ort
+    print(f"ONNX Runtime version: {ort.__version__}")
+    print(f"Available providers: {ort.get_available_providers()}")
+    if 'CUDAExecutionProvider' in ort.get_available_providers():
+        print("CUDA is available for ONNX Runtime")
+        # Get CUDA device properties
+        import torch
+        if torch.cuda.is_available():
+            print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+            print(f"CUDA device count: {torch.cuda.device_count()}")
+            print(f"CUDA memory allocated: {torch.cuda.memory_allocated(0) / (1024 ** 2):.2f} MB")
+            print(f"CUDA memory reserved: {torch.cuda.memory_reserved(0) / (1024 ** 2):.2f} MB")
+    print("=======================================")
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Vehicle Detection Overlay')
     parser.add_argument('--cuda', action='store_true', help='Use CUDA acceleration if available')
