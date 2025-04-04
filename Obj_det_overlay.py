@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
 import onnxruntime as ort
-from mss import mss
 import time
 import sys
 import argparse
+import dxcam  # Replace mss with dxcam
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QImage
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
@@ -31,8 +31,9 @@ DISPLAY_MODE_SEMI_TRANSPARENT = 1
 DISPLAY_MODE_FULL_IMAGE = 2
 
 # Performance Configuration
-FRAME_INTERVAL = 20  # ms between frames (50 FPS target instead of 1000)
+FRAME_INTERVAL = 20  # ms between frames (50 FPS target)
 TRACKING_HISTORY = 5  # Number of frames to maintain tracking
+DXCAM_TARGET_FPS = 60  # Target FPS for DXcam
 
 
 #############################################################
@@ -356,18 +357,26 @@ class DetectionOverlay(QMainWindow):
         self.fps = 0
         self.conf_threshold = DEFAULT_CONF_THRESHOLD
         self.detection_fps = 0
+        self.capture_fps = 0
+        self.last_capture_time = time.time()
 
-        # Initialize screen capture
-        self.sct = mss()
-        self.monitor = {
-            "top": 0,
-            "left": 0,
-            "width": self.screen_width,
-            "height": self.screen_height
-        }
+        # Initialize DXcam (instead of MSS)
+        try:
+            # Print available devices and outputs
+            print("DXcam Device info:", dxcam.device_info())
+            print("DXcam Output info:", dxcam.output_info())
+
+            # Create DXcam instance (primary monitor)
+            self.camera = dxcam.create(output_idx=0, output_color="BGR")
+            print("DXcam initialized successfully")
+        except Exception as e:
+            print(f"Error initializing DXcam: {e}")
+            print("Falling back to full screen capture")
+            self.camera = None
 
         # Frame stats queue for FPS averaging
-        self.fps_queue = deque(maxlen=10)
+        self.fps_queue = deque(maxlen=30)
+        self.capture_fps_queue = deque(maxlen=30)
 
     def init_processing_thread(self):
         """Initialize the detection processing thread"""
@@ -396,20 +405,32 @@ class DetectionOverlay(QMainWindow):
         self.processing_timer.start(FRAME_INTERVAL)  # 50 FPS target
 
     def capture_frame(self):
-        """Capture the current screen contents and submit for processing"""
+        """Capture the current screen contents using DXcam and submit for processing"""
         try:
-            # Capture frame
-            frame = np.array(self.sct.grab(self.monitor))
+            current_time = time.time()
+            elapsed = current_time - self.last_capture_time
+            self.last_capture_time = current_time
 
-            # Convert colorspace (only once, before submitting to thread)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            # Calculate capture FPS
+            if elapsed > 0:
+                self.capture_fps_queue.append(1.0 / elapsed)
+                self.capture_fps = sum(self.capture_fps_queue) / len(self.capture_fps_queue)
 
-            # Store current frame for display if needed
-            self.current_frame = frame_rgb
+            # Capture frame using DXcam
+            if self.camera is not None:
+                # DXcam returns frames in BGR format by default (as configured)
+                frame = self.camera.grab()
 
-            # Submit frame to detection thread
-            self.detection_thread.set_conf_threshold(self.conf_threshold)
-            self.detection_thread.set_frame(frame_rgb.copy())
+                # DXcam will return None if there's no new frame
+                if frame is None:
+                    return
+
+                # Store current frame for display if needed
+                self.current_frame = frame
+
+                # Submit frame to detection thread
+                self.detection_thread.set_conf_threshold(self.conf_threshold)
+                self.detection_thread.set_frame(frame.copy())
 
         except Exception as e:
             print(f"Error capturing frame: {e}")
@@ -457,24 +478,25 @@ class DetectionOverlay(QMainWindow):
         painter.setFont(font)
 
         # Draw info panel background
-        painter.fillRect(5, 5, 350, 150, QColor(0, 0, 0, 180))
+        painter.fillRect(5, 5, 350, 170, QColor(0, 0, 0, 180))
 
         # Draw stats text
         painter.setPen(QColor(255, 50, 50))
         painter.drawText(10, 30, f"FPS: {self.fps:.1f}")
         painter.drawText(10, 50, f"Processing FPS: {self.detection_fps:.1f}")
-        painter.drawText(10, 70, f"Detections: {len(self.detections)}")
-        painter.drawText(10, 90, f"Display Mode: {self.display_mode} (D to change)")
-        painter.drawText(10, 110, f"Screen: {self.screen_width}x{self.screen_height}")
-        painter.drawText(10, 130, f"Confidence: {self.conf_threshold:.2f} (↑/↓ to adjust)")
+        painter.drawText(10, 70, f"Capture FPS: {self.capture_fps:.1f}")
+        painter.drawText(10, 90, f"Detections: {len(self.detections)}")
+        painter.drawText(10, 110, f"Display Mode: {self.display_mode} (D to change)")
+        painter.drawText(10, 130, f"Screen: {self.screen_width}x{self.screen_height}")
+        painter.drawText(10, 150, f"Confidence: {self.conf_threshold:.2f} (↑/↓ to adjust)")
 
         # Display CUDA status with appropriate color
         if self.detection_thread.cuda_available:
             painter.setPen(QColor(50, 255, 50))  # Green for CUDA enabled
-            painter.drawText(10, 150, "CUDA: Enabled")
+            painter.drawText(10, 170, "CUDA: Enabled")
         else:
             painter.setPen(QColor(255, 255, 50))  # Yellow for CPU only
-            painter.drawText(10, 150, "CUDA: Disabled (CPU mode)")
+            painter.drawText(10, 170, "CUDA: Disabled (CPU mode)")
 
     def draw_detections(self, painter):
         """Draw all detected objects"""
@@ -537,11 +559,19 @@ class DetectionOverlay(QMainWindow):
             self.conf_threshold = max(MIN_CONF_THRESHOLD, self.conf_threshold - CONF_STEP)
             print(f"Confidence threshold decreased to: {self.conf_threshold:.2f}")
 
+        # Add region selection mode (for future enhancement)
+        elif event.key() == Qt.Key_R:
+            print("Region selection mode is not implemented yet")
+
     def closeEvent(self, event):
         """Clean up resources when closing"""
         # Stop detection thread
         if hasattr(self, 'detection_thread'):
             self.detection_thread.stop()
+
+        # Release DXcam resources
+        if hasattr(self, 'camera') and self.camera is not None:
+            self.camera.release()
 
         super().closeEvent(event)
 
@@ -554,6 +584,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Vehicle Detection Overlay')
     parser.add_argument('--cuda', action='store_true', help='Use CUDA acceleration if available')
+    parser.add_argument('--region', type=str, help='Region to capture in format left,top,right,bottom')
     args = parser.parse_args()
 
     # Create application
