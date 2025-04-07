@@ -12,7 +12,7 @@ from collections import deque
 import threading
 
 # Configuration Parameters
-MODEL_PATH = "best1.onnx"  # Path to the ONNX model file
+MODEL_PATH = "yolo12.onnx"  # Path to the ONNX model file
 CLASS_NAMES = ["vehicle"]  # List of class names the model can detect
 DEFAULT_CONF_THRESHOLD, MIN_CONF_THRESHOLD, MAX_CONF_THRESHOLD = 0.25, 0.1, 0.9  # Confidence thresholds for detection
 CONF_STEP = 0.05  # Step size for adjusting confidence threshold
