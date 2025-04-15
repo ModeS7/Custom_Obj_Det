@@ -20,9 +20,9 @@ DEFAULT_MODEL = AVAILABLE_MODELS[0]
 
 # Configuration
 DEFAULT_CONF_THRESHOLD = 0.8
-DEFAULT_IOU_THRESHOLD = 0.8
+DEFAULT_IOU_THRESHOLD = 0.95
 INPUT_SIZE = 640  # YOLO input size
-TILE_OVERLAP = 50  # Overlap between tiles in pixels
+TILE_OVERLAP = 10  # Overlap between tiles in pixels
 
 # Capture modes
 CAPTURE_MODE_DISPLAY = 0  # Capture entire display
@@ -33,23 +33,6 @@ MODE_SINGLE_FRAME = 0  # Original mode - resize entire frame
 MODE_TILED = 1  # New mode - split into tiles
 
 
-class WindowOutlineWidget(QWidget):
-    """Widget to draw an outline around the selected window"""
-
-    def __init__(self, rect, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.rect = rect
-        self.setGeometry(self.rect)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        pen = QPen(QColor(0, 255, 0), 3)  # Green, 3px wide
-        painter.setPen(pen)
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-
-
 class WindowSelectionDialog(QDialog):
     """Dialog for selecting a specific window for capture"""
 
@@ -57,7 +40,6 @@ class WindowSelectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Select Window")
         self.selected_window = None
-        self.outline_widget = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -70,7 +52,6 @@ class WindowSelectionDialog(QDialog):
         # Window list
         self.window_list = QListWidget()
         self.populate_window_list()
-        self.window_list.currentRowChanged.connect(self.preview_window)
         layout.addWidget(self.window_list)
 
         # Buttons
@@ -98,36 +79,12 @@ class WindowSelectionDialog(QDialog):
                 item = QListWidgetItem(f"{window.title} ({window.width}x{window.height})")
                 self.window_list.addItem(item)
 
-    def preview_window(self, index):
-        """Show preview outline around the selected window"""
-        if index < 0 or index >= len(self.windows):
-            return
-
-        # Remove previous outline if exists
-        if self.outline_widget:
-            self.outline_widget.close()
-            self.outline_widget = None
-
-        # Get window info
-        window = self.windows[index]
-        rect = QRect(window.left, window.top, window.width, window.height)
-
-        # Create outline widget
-        self.outline_widget = WindowOutlineWidget(rect)
-        self.outline_widget.show()
-
     def get_selected_window(self):
         """Return the selected window object"""
         index = self.window_list.currentRow()
         if index >= 0 and index < len(self.windows):
             return self.windows[index]
         return None
-
-    def closeEvent(self, event):
-        """Clean up when dialog is closed"""
-        if self.outline_widget:
-            self.outline_widget.close()
-        super().closeEvent(event)
 
 
 class TargetSelectionDialog(QDialog):
@@ -252,59 +209,6 @@ class TargetSelectionDialog(QDialog):
                 'mode': CAPTURE_MODE_WINDOW,
                 'window': self.selected_window
             }
-
-
-class ModelSelectionDialog(QDialog):
-    """Dialog for selecting model to use"""
-
-    def __init__(self, current_model, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Model")
-        self.current_model = current_model
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout()
-
-        # Instructions
-        instructions = QLabel("Select YOLO model to use:")
-        layout.addWidget(instructions)
-
-        # Model list
-        self.model_list = QListWidget()
-        self.populate_model_list()
-        layout.addWidget(self.model_list)
-
-        # Buttons
-        button_layout = QHBoxLayout()
-        self.ok_button = QPushButton("Select")
-        self.ok_button.clicked.connect(self.accept)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.reject)
-
-        button_layout.addWidget(self.ok_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
-        self.resize(300, 200)
-
-    def populate_model_list(self):
-        """Populate the list with available models"""
-        for model_name in AVAILABLE_MODELS:
-            item = QListWidgetItem(model_name)
-            self.model_list.addItem(item)
-
-            # Select current model in the list
-            if model_name == self.current_model:
-                self.model_list.setCurrentItem(item)
-
-    def get_selected_model(self):
-        """Return the selected model name"""
-        current_row = self.model_list.currentRow()
-        if current_row >= 0 and current_row < len(AVAILABLE_MODELS):
-            return AVAILABLE_MODELS[current_row]
-        return DEFAULT_MODEL
 
 
 class DetectionThread(QThread):
@@ -567,18 +471,6 @@ class DetectionWindow(QMainWindow):
         controls_panel = QWidget()
         controls_layout = QVBoxLayout(controls_panel)
 
-        # Add confidence threshold slider
-        confidence_layout = QHBoxLayout()
-        confidence_layout.addWidget(QLabel("Confidence:"))
-        self.conf_threshold = DEFAULT_CONF_THRESHOLD
-        controls_layout.addLayout(confidence_layout)
-
-        # Add IoU threshold slider
-        iou_layout = QHBoxLayout()
-        iou_layout.addWidget(QLabel("IoU:"))
-        self.iou_threshold = DEFAULT_IOU_THRESHOLD
-        controls_layout.addLayout(iou_layout)
-
         # Add controls description
         controls_help = QLabel(
             "Controls:\n"
@@ -609,6 +501,8 @@ class DetectionWindow(QMainWindow):
         self.current_frame = None
         self.fps = 0
         self.tile_count = 0
+        self.conf_threshold = DEFAULT_CONF_THRESHOLD
+        self.iou_threshold = DEFAULT_IOU_THRESHOLD
 
         # Capture state
         self.capture_mode = None
@@ -616,13 +510,8 @@ class DetectionWindow(QMainWindow):
         self.target_window = None
         self.camera = None
         self.window_rect = None
-        self.monitor_info = None
 
-        # Window monitor timer (for browser window mode)
-        self.window_monitor_timer = QTimer(self)
-        self.window_monitor_timer.timeout.connect(self.check_window_changes)
-
-        # Get monitor information
+        # Get monitor info
         self.get_monitor_info()
 
         # Initial target selection
@@ -641,42 +530,8 @@ class DetectionWindow(QMainWindow):
         self.capture_timer.timeout.connect(self.capture_frame)
         self.capture_timer.start(33)  # ~30 FPS
 
-        # Position the window strategically
-        self.position_window_strategically()
-
-    def update_model_info(self, model_name):
-        """Update UI after model is loaded"""
-        self.current_model = model_name
-        # Update window title to include model name
-        self.setWindowTitle(f"Vehicle Detection - Model: {model_name}")
-
-    def select_model(self):
-        """Open dialog to select a new model"""
-        # Pause capture
-        self.capture_timer.stop()
-
-        dialog = ModelSelectionDialog(self.current_model, self)
-        if dialog.exec_() == QDialog.Accepted:
-            selected_model = dialog.get_selected_model()
-            if selected_model != self.current_model:
-                print(f"Changing model to {selected_model}")
-                # Send model change request to detection thread
-                self.detection_thread.change_model(selected_model)
-
-        # Resume capture
-        self.capture_timer.start()
-
-    def cycle_model(self):
-        """Cycle to the next available model"""
-        # Find current model index
-        current_index = AVAILABLE_MODELS.index(self.current_model)
-
-        # Get next model (with wraparound)
-        next_index = (current_index + 1) % len(AVAILABLE_MODELS)
-        next_model = AVAILABLE_MODELS[next_index]
-
-        print(f"Cycling model from {self.current_model} to {next_model}")
-        self.detection_thread.change_model(next_model)
+        # Center window on screen
+        self.center_window()
 
     def get_monitor_info(self):
         """Get information about all monitors"""
@@ -695,6 +550,31 @@ class DetectionWindow(QMainWindow):
                 'right': geometry.right(),
                 'bottom': geometry.bottom()
             })
+
+        print(f"Detected {len(self.monitor_info)} monitors")
+        for i, monitor in enumerate(self.monitor_info):
+            print(f"Monitor {i}: {monitor['width']}x{monitor['height']} at ({monitor['left']},{monitor['top']})")
+
+    def update_model_info(self, model_name):
+        """Update UI after model is loaded"""
+        self.current_model = model_name
+        # Update window title to include model name
+        self.setWindowTitle(f"Vehicle Detection - Model: {model_name}")
+
+    def cycle_model(self):
+        """Cycle to the next available model"""
+        # Find current model index
+        try:
+            current_index = AVAILABLE_MODELS.index(self.current_model)
+        except ValueError:
+            current_index = 0
+
+        # Get next model (with wraparound)
+        next_index = (current_index + 1) % len(AVAILABLE_MODELS)
+        next_model = AVAILABLE_MODELS[next_index]
+
+        print(f"Cycling model from {self.current_model} to {next_model}")
+        self.detection_thread.change_model(next_model)
 
     def select_initial_target(self):
         """Show initial target selection dialog"""
@@ -732,9 +612,6 @@ class DetectionWindow(QMainWindow):
                 pass
             self.camera = None
 
-        if self.window_monitor_timer.isActive():
-            self.window_monitor_timer.stop()
-
         self.capture_mode = target_info['mode']
 
         if self.capture_mode == CAPTURE_MODE_DISPLAY:
@@ -763,49 +640,46 @@ class DetectionWindow(QMainWindow):
         elif self.capture_mode == CAPTURE_MODE_WINDOW:
             # Window mode
             self.target_window = target_info['window']
-            self.update_window_info()
+
+            # Get display that contains this window
+            self.window_display_idx = self.get_display_containing_window(self.target_window)
+            if self.window_display_idx is None:
+                self.window_display_idx = 0
+
+            print(f"Window is on display {self.window_display_idx}")
 
             try:
-                # For window capture, first try to use display capture and crop the frames
-                # This is more reliable than using dxcam's region parameter
-                display_index = self.get_display_containing_window()
-                if display_index is None:
-                    display_index = 0  # Default to first display
+                # Update window info
+                if self.target_window:
+                    self.window_rect = QRect(
+                        self.target_window.left, self.target_window.top,
+                        self.target_window.width, self.target_window.height
+                    )
+                    self.screen_width = self.target_window.width
+                    self.screen_height = self.target_window.height
 
-                print(f"Creating camera for display {display_index} to capture window")
-                self.camera = dxcam.create(output_idx=display_index)
-
+                # Create camera for the specific display containing the window
+                self.camera = dxcam.create(output_idx=self.window_display_idx)
                 print(f"Window capture initialized for: {self.target_window.title}")
-
-                # Start window monitor timer
-                self.window_monitor_timer.start(500)  # Check every half second
                 return True
             except Exception as e:
                 print(f"Error initializing window capture: {e}")
-
-                # Fallback to display capture
-                try:
-                    print("Falling back to display capture")
-                    self.capture_mode = CAPTURE_MODE_DISPLAY
-                    self.display_idx = 0
-                    self.camera = dxcam.create(output_idx=self.display_idx)
-                    return True
-                except Exception as e2:
-                    print(f"Fallback failed: {e2}")
-                    return False
+                return False
 
         return False
 
-    def get_display_containing_window(self):
+    def get_display_containing_window(self, window):
         """Find which display contains the target window"""
-        if not self.target_window:
+        if not window:
             return 0
 
         # Get window position
-        win_left = self.target_window.left
-        win_top = self.target_window.top
-        win_right = win_left + self.target_window.width
-        win_bottom = win_top + self.target_window.height
+        win_left = window.left
+        win_top = window.top
+        win_right = win_left + window.width
+        win_bottom = win_top + window.height
+
+        print(f"Window coordinates: ({win_left},{win_top}) - ({win_right},{win_bottom})")
 
         # Find which monitor contains most of the window
         best_match = 0
@@ -820,110 +694,20 @@ class DetectionWindow(QMainWindow):
 
             if overlap_right > overlap_left and overlap_bottom > overlap_top:
                 overlap_area = (overlap_right - overlap_left) * (overlap_bottom - overlap_top)
+                print(f"Overlap with monitor {idx}: {overlap_area} pixels²")
                 if overlap_area > best_overlap:
                     best_overlap = overlap_area
                     best_match = idx
 
+        print(f"Best matching display: {best_match}")
         return best_match
 
-    def update_window_info(self):
-        """Update window position and size information"""
-        if not self.target_window:
-            return
-
-        try:
-            # Update window with current state
-            window_list = gw.getWindowsWithTitle(self.target_window.title)
-            if not window_list:
-                print(f"Window '{self.target_window.title}' not found")
-                return
-
-            self.target_window = window_list[0]
-
-            # Store the window rect
-            self.window_rect = QRect(
-                self.target_window.left, self.target_window.top,
-                self.target_window.width, self.target_window.height
-            )
-
-            self.screen_width = self.target_window.width
-            self.screen_height = self.target_window.height
-        except Exception as e:
-            print(f"Error updating window info: {e}")
-
-    def check_window_changes(self):
-        """Check for window position/size changes"""
-        if not self.target_window:
-            return
-
-        try:
-            # Find the window by title
-            windows = gw.getWindowsWithTitle(self.target_window.title)
-            if not windows:
-                print(f"Window '{self.target_window.title}' not found.")
-                return
-
-            current_window = windows[0]
-
-            # Check if window position or size has changed
-            current_rect = QRect(
-                current_window.left, current_window.top,
-                current_window.width, current_window.height
-            )
-
-            if (current_rect != self.window_rect):
-                print("Window position or size changed. Updating capture.")
-
-                # Update the target window reference
-                self.target_window = current_window
-
-                # Store the new rect
-                self.window_rect = current_rect
-
-                # Update size info
-                self.screen_width = current_window.width
-                self.screen_height = current_window.height
-
-        except Exception as e:
-            print(f"Error checking window changes: {e}")
-
-    def toggle_detection_mode(self):
-        """Toggle between single frame and tiled detection modes"""
-        self.detection_mode = MODE_TILED if self.detection_mode == MODE_SINGLE_FRAME else MODE_SINGLE_FRAME
-
-        # Update detection thread mode
-        self.detection_thread.set_detection_mode(self.detection_mode)
-
-        print(f"Switched to {'Tiled' if self.detection_mode == MODE_TILED else 'Single Frame'} mode")
-
-    def toggle_labels(self):
-        """Toggle confidence labels on/off"""
-        self.show_labels = not self.show_labels
-        print(f"Labels {'on' if self.show_labels else 'off'}")
-        self.update_display()  # Update immediately to reflect change
-
-    def position_window_strategically(self):
-        """Position window strategically based on capture mode"""
-        app = QApplication.instance()
-        screens = app.screens()
-
-        if self.capture_mode == CAPTURE_MODE_DISPLAY:
-            # If capturing a display, try to position on another display if available
-            if len(screens) > 1:
-                for i, screen in enumerate(screens):
-                    if i != self.display_idx:
-                        # Position window on this screen
-                        screen_geo = screen.geometry()
-                        window_size = self.size()
-                        x = screen_geo.x() + (screen_geo.width() - window_size.width()) // 2
-                        y = screen_geo.y() + (screen_geo.height() - window_size.height()) // 2
-                        self.move(x, y)
-                        return
-
-        # Default positioning
-        self.resize(800, 600)
-        center_point = QApplication.desktop().screenGeometry().center()
-        self.move(center_point - QPoint(400, 300))  # Center the window
+    def center_window(self):
+        """Center window on screen"""
+        screen = QApplication.desktop().screenGeometry()
+        size = self.geometry()
+        self.move((screen.width() - size.width()) // 2,
+                  (screen.height() - size.height()) // 2)
 
     def create_tiles(self, frame):
         """Split the frame into multiple tiles with overlap"""
@@ -975,44 +759,50 @@ class DetectionWindow(QMainWindow):
     def capture_frame(self):
         """Capture screen/window and process based on detection mode"""
         if self.camera:
-            # dxcam returns the frame in RGB format
             try:
                 frame = self.camera.grab()
                 if frame is not None:
                     # If in window mode, crop the frame to the window
-                    if self.capture_mode == CAPTURE_MODE_WINDOW and self.window_rect:
-                        # Determine the display being captured
-                        display_idx = self.get_display_containing_window()
-                        if display_idx is not None:
-                            # Calculate window position relative to the display
-                            display_info = self.monitor_info[display_idx]
+                    if self.capture_mode == CAPTURE_MODE_WINDOW and self.target_window:
+                        try:
+                            # Get updated window position
+                            windows = gw.getWindowsWithTitle(self.target_window.title)
+                            if windows:
+                                window = windows[0]
 
-                            # Calculate window coordinates relative to captured display
-                            rel_left = self.window_rect.left() - display_info['left']
-                            rel_top = self.window_rect.top() - display_info['top']
-                            rel_right = rel_left + self.window_rect.width()
-                            rel_bottom = rel_top + self.window_rect.height()
+                                # Get the monitor info for the screen being captured
+                                monitor = self.monitor_info[self.window_display_idx]
 
-                            # Ensure we don't go out of bounds
-                            rel_left = max(0, rel_left)
-                            rel_top = max(0, rel_top)
-                            rel_right = min(display_info['width'], rel_right)
-                            rel_bottom = min(display_info['height'], rel_bottom)
+                                # Calculate position relative to this monitor
+                                rel_x = window.left - monitor['left']
+                                rel_y = window.top - monitor['top']
 
-                            # Crop the frame to the window area
-                            if (rel_right > rel_left and rel_bottom > rel_top and
-                                    rel_right <= frame.shape[1] and rel_bottom <= frame.shape[0]):
-                                frame = frame[rel_top:rel_bottom, rel_left:rel_right]
-                            else:
+                                # Make sure coordinates are within bounds
+                                rel_x = max(0, rel_x)
+                                rel_y = max(0, rel_y)
+                                rel_right = min(monitor['width'], rel_x + window.width)
+                                rel_bottom = min(monitor['height'], rel_y + window.height)
+
+                                # Print coordinates for debugging
                                 print(
-                                    f"Invalid window region: {rel_left},{rel_top},{rel_right},{rel_bottom} in {frame.shape}")
+                                    f"Window global: ({window.left},{window.top}), Monitor: ({monitor['left']},{monitor['top']})")
+                                print(f"Relative coordinates: ({rel_x},{rel_y}) - ({rel_right},{rel_bottom})")
+
+                                # Check if coordinates are valid
+                                if rel_right > rel_x and rel_bottom > rel_y and \
+                                        rel_x < frame.shape[1] and rel_y < frame.shape[0] and \
+                                        rel_right <= frame.shape[1] and rel_bottom <= frame.shape[0]:
+                                    # Crop frame to window
+                                    frame = frame[rel_y:rel_bottom, rel_x:rel_right]
+                                    print(f"Cropped frame to {frame.shape}")
+                                else:
+                                    print(
+                                        f"Invalid crop region: ({rel_x},{rel_y},{rel_right},{rel_bottom}) for frame {frame.shape}")
+                        except Exception as e:
+                            print(f"Error cropping to window: {e}")
 
                     # Store the frame for display
                     self.current_frame = frame
-
-                    # Set thresholds
-                    self.detection_thread.set_conf_threshold(self.conf_threshold)
-                    self.detection_thread.set_iou_threshold(self.iou_threshold)
 
                     # Process according to detection mode
                     if self.detection_mode == MODE_TILED:
@@ -1090,21 +880,16 @@ class DetectionWindow(QMainWindow):
         pixmap = pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.image_label.setPixmap(pixmap)
 
-        # Update info text
-        mode_text = "Tiled" if self.detection_mode == MODE_TILED else "Single Frame"
-        label_status = "On" if self.show_labels else "Off"
-        tile_info = f" | Tiles: {self.tile_count}" if self.detection_mode == MODE_TILED else ""
+        # Update info text with essential information only
+        mode_label = "T" if self.detection_mode == MODE_TILED else "S"
+        labels_status = "L" if self.show_labels else "-"
 
-        target_text = ""
-        if self.capture_mode == CAPTURE_MODE_DISPLAY:
-            target_text = f"Display {self.display_idx}"
-        else:
-            target_text = f"Window: {self.target_window.title if self.target_window else 'Unknown'}"
-
-        info_text = (f"Model: {self.current_model} | Target: {target_text} | Mode: {mode_text} | "
-                     f"Labels: {label_status} | FPS: {self.fps:.1f} | "
-                     f"Detections: {len(self.detections)}{tile_info} | "
-                     f"Conf: {self.conf_threshold:.2f} | IoU: {self.iou_threshold:.2f}")
+        info_text = (f"Model: {self.current_model} | "
+                     f"FPS: {self.fps:.1f} | "
+                     f"Det: {len(self.detections)} | "
+                     f"C: {self.conf_threshold:.2f} | "
+                     f"IoU: {self.iou_threshold:.2f} | "
+                     f"Mode: {mode_label}{labels_status}")
         self.info_label.setText(info_text)
 
     def resizeEvent(self, event):
@@ -1132,19 +917,35 @@ class DetectionWindow(QMainWindow):
         elif event.key() == Qt.Key_Up:
             # Increase confidence threshold
             self.conf_threshold = min(0.95, self.conf_threshold + 0.05)
+            self.detection_thread.set_conf_threshold(self.conf_threshold)
             print(f"Confidence threshold: {self.conf_threshold:.2f}")
         elif event.key() == Qt.Key_Down:
             # Decrease confidence threshold
             self.conf_threshold = max(0.05, self.conf_threshold - 0.05)
+            self.detection_thread.set_conf_threshold(self.conf_threshold)
             print(f"Confidence threshold: {self.conf_threshold:.2f}")
         elif event.key() == Qt.Key_Right:
             # Increase IoU threshold
             self.iou_threshold = min(0.95, self.iou_threshold + 0.05)
+            self.detection_thread.set_iou_threshold(self.iou_threshold)
             print(f"IoU threshold: {self.iou_threshold:.2f}")
         elif event.key() == Qt.Key_Left:
             # Decrease IoU threshold
             self.iou_threshold = max(0.05, self.iou_threshold - 0.05)
+            self.detection_thread.set_iou_threshold(self.iou_threshold)
             print(f"IoU threshold: {self.iou_threshold:.2f}")
+
+    def toggle_detection_mode(self):
+        """Toggle between single frame and tiled detection modes"""
+        self.detection_mode = MODE_TILED if self.detection_mode == MODE_SINGLE_FRAME else MODE_SINGLE_FRAME
+        self.detection_thread.set_detection_mode(self.detection_mode)
+        print(f"Switched to {'Tiled' if self.detection_mode == MODE_TILED else 'Single Frame'} mode")
+
+    def toggle_labels(self):
+        """Toggle confidence labels on/off"""
+        self.show_labels = not self.show_labels
+        print(f"Labels {'on' if self.show_labels else 'off'}")
+        self.update_display()
 
     def closeEvent(self, event):
         """Clean up on close"""
@@ -1157,16 +958,13 @@ class DetectionWindow(QMainWindow):
             except:
                 pass
 
-        if hasattr(self, 'window_monitor_timer') and self.window_monitor_timer.isActive():
-            self.window_monitor_timer.stop()
-
         super().closeEvent(event)
 
 
 def main():
     """Main function"""
     # Parse arguments
-    parser = argparse.ArgumentParser(description="Vehicle Detection with Model Selection")
+    parser = argparse.ArgumentParser(description="Vehicle Detection App")
     parser.add_argument("--cuda", action="store_true", help="Use CUDA acceleration")
     args = parser.parse_args()
 
