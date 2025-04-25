@@ -35,7 +35,8 @@ def crop_images(input_folder, output_folder, crop_size=640):
             num_crops_width = width // crop_size
             num_crops_height = height // crop_size
 
-            print(f"Processing {image_file} ({width}x{height}) -> {num_crops_width}x{num_crops_height} crops")
+            print(f"Processing {image_file} ({width}x{height}) ->"
+                  f" {num_crops_width}x{num_crops_height} crops")
 
             crop_count = 0
             # Extract crops
