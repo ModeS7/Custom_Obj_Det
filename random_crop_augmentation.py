@@ -25,11 +25,11 @@ import json
 from tqdm import tqdm
 
 # Configuration
-TARGET_IMAGES = 600
+TARGET_IMAGES = 2400
 CROP_SIZE = 640
 SCALE_MEAN = 1.0  # Normal scale focus
 SCALE_STD = 0.2  # Standard deviation for random zoom
-MIN_SCALE = 0.7  # Minimum zoom (70%)
+MIN_SCALE = 0.5  # Minimum zoom (50%)
 MAX_SCALE = 1.4  # Maximum zoom (140%)
 MIN_ANNOTATION_VISIBILITY = 0.5  # 50% minimum visibility
 KEEP_ZERO_ANNOTATION_CROPS = True  # Keep crops with no annotations
@@ -232,21 +232,21 @@ def apply_photometric_augmentations_normal_dist(image):
     img_float = image.astype(np.float32) / 255.0
 
     # ✅ BRIGHTNESS: Normal distribution around 0, most images get little change
-    brightness_delta = np.random.normal(0, 0.08)  # Mean=0, std=0.08 (wider spread)
-    brightness_delta = np.clip(brightness_delta, -0.15, 0.15)  # Clip extremes
+    brightness_delta = np.random.normal(0, 0.1)  # Mean=0, std=0.1 (wider spread)
+    brightness_delta = np.clip(brightness_delta, -0.20, 0.20)  # Clip extremes
     img_float = np.clip(img_float + brightness_delta, 0, 1)
 
     # ✅ CONTRAST: Normal distribution around 1.0, most images get little change
     contrast_factor = np.random.normal(1.0, 0.1)  # Mean=1.0 (neutral), std=0.1
-    contrast_factor = np.clip(contrast_factor, 0.85, 1.15)  # Clip extremes (1.0 ± 0.15)
+    contrast_factor = np.clip(contrast_factor, 0.80, 1.20)  # Clip extremes (1.0 ± 0.15)
     img_float = np.clip(img_float * contrast_factor, 0, 1)
 
     # Convert back to uint8
     img_uint8 = (img_float * 255).astype(np.uint8)
 
     # ✅ NOISE: Normal distribution around 0, most images get little noise
-    noise_std = abs(np.random.normal(0, 6.0))  # Mean=0, std=6, take absolute value
-    noise_std = np.clip(noise_std, 0, 15.0)    # Cap maximum noise
+    noise_std = abs(np.random.normal(0, 8.0))  # Mean=0, std=8, take absolute value
+    noise_std = np.clip(noise_std, 0, 20.0)    # Cap maximum noise
 
     # Apply noise to image
     noise = np.random.normal(0, noise_std, img_uint8.shape).astype(np.float32)
@@ -254,8 +254,8 @@ def apply_photometric_augmentations_normal_dist(image):
     img_with_noise = np.clip(img_with_noise, 0, 255).astype(np.uint8)
 
     # ✅ BLUR/SHARPENING: Single normal distribution - negative=blur, positive=sharpen
-    blur_sharpen_factor = np.random.normal(0, 2.0)  # Mean=0, std=2
-    blur_sharpen_factor = np.clip(blur_sharpen_factor, -4.0, 4.0)  # Clip extremes
+    blur_sharpen_factor = np.random.normal(0, 3.0)  # Mean=0, std=3
+    blur_sharpen_factor = np.clip(blur_sharpen_factor, -5.0, 5.0)  # Clip extremes
 
     if blur_sharpen_factor < -0.3:  # Negative side: Apply blur
         # Convert factor to blur kernel size (larger negative = more blur)

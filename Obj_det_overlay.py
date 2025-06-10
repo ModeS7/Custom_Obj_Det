@@ -13,7 +13,7 @@ import pygetwindow as gw
 import os
 
 # Constants
-AVAILABLE_MODELS = ["yolo12.onnx", "yolo8.onnx", "yolo3.onnx"]
+AVAILABLE_MODELS = ["yolo12.onnx", "yolo8.onnx", "yolo3.onnx", "best.onnx"]
 DEFAULT_MODEL = AVAILABLE_MODELS[0]
 DEFAULT_CONF_THRESHOLD = 0.8
 DEFAULT_IOU_THRESHOLD = 0.95

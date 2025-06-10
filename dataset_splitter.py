@@ -12,7 +12,7 @@ import json
 
 # Configuration
 TARGET_TEST_TILES = 55  # Back to higher targets with aggressive approach
-TARGET_VAL_TILES = 35  # Back to higher targets
+TARGET_VAL_TILES = 0  # Back to higher targets
 TILE_SIZE = 640
 STRIP_WIDTH = 640
 MIN_IMAGES_FOR_STRIPS = 8  # Minimum images to try
