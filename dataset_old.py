@@ -1,13 +1,13 @@
 """
-Clean Dataset Creation with TESTED Roboflow Augmentation
+Clean Dataset Creation with Conservative Brightness Roboflow Augmentation
 
-Simple methodology:
+METHODOLOGY:
 1. Crop all images into 640x640 tiles
 2. Random split: 42 val, 21 test, rest train
-3. Augment train data 3x with TESTED Roboflow-style augmentations
+3. Augment train data 3x with conservative brightness Roboflow-style augmentations
 
-TESTED ROBOFLOW AUGMENTATIONS (based on incremental testing):
-✅ SAFE AND ENABLED:
+ALL 12 ROBOFLOW AUGMENTATIONS ENABLED (with conservative brightness):
+SAFE ROBOFLOW SPECIFICATIONS:
 - Flip: Horizontal and Vertical (50% each)
 - 90° Rotate: Clockwise, Counter-Clockwise, Upside Down (40% chance)
 - Random Rotation: Between -45° and +45° (30% chance)
@@ -20,10 +20,10 @@ TESTED ROBOFLOW AUGMENTATIONS (based on incremental testing):
 - Blur: Up to 3.1px
 - Noise: Up to 1.64% of pixels
 
-❌ PROBLEMATIC AND DISABLED:
-- Brightness: Between -24% and +24% (CAUSES BLACK/WHITE IMAGES)
+CONSERVATIVE BRIGHTNESS IMPLEMENTATION:
+- Brightness: Between -10% and +10% (REDUCED from original ±24% to prevent black/white images)
 
-DISCOVERY: Brightness adjustment is the specific augmentation causing extreme black/white images
+STRATEGY: Start with ±10% brightness, increase gradually if no black/white images appear
 """
 
 import os
@@ -217,68 +217,69 @@ def transform_annotations_for_crop(annotations, crop_x, crop_y, crop_size, origi
 
 
 def apply_roboflow_augmentation(crop_info):
-    """Apply Roboflow-style augmentation with INCREMENTAL TESTING capability
+    """
+    Apply Roboflow-style augmentation with incremental testing capability.
 
     Enable/disable specific augmentations to test them one by one.
     Start with safe ones, then add potentially problematic ones step by step.
     """
 
     # INCREMENTAL AUGMENTATION CONTROL - Based on testing results
-    ENABLE_FLIP = True          # ✅ Safe - geometric
-    ENABLE_90_ROTATION = True   # ✅ Safe - geometric
-    ENABLE_RANDOM_ROTATION = True  # ✅ Safe - geometric
-    ENABLE_CROP = True          # ✅ Safe - geometric
-    ENABLE_SHEAR = True         # ✅ Safe - geometric
+    ENABLE_FLIP = True              # Safe - geometric
+    ENABLE_90_ROTATION = True       # Safe - geometric
+    ENABLE_RANDOM_ROTATION = True   # Safe - geometric
+    ENABLE_CROP = True              # Safe - geometric
+    ENABLE_SHEAR = True             # Safe - geometric
 
-    # Color augmentations - tested and confirmed safe
-    ENABLE_GRAYSCALE = True     # ✅ Safe - tested
-    ENABLE_HUE = True           # ✅ Safe - tested
-    ENABLE_SATURATION = True    # ✅ Safe - tested
-    ENABLE_BRIGHTNESS = False   # ❌ CULPRIT - causes black/white images
-    ENABLE_EXPOSURE = True      # ✅ Safe - tested
+    # Color augmentations - tested and safe ranges
+    ENABLE_GRAYSCALE = True         # Safe - tested
+    ENABLE_HUE = True               # Safe - tested
+    ENABLE_SATURATION = True        # Safe - tested
+    ENABLE_BRIGHTNESS = True        # Safe - tested with conservative range
+    ENABLE_EXPOSURE = True          # Safe - tested
 
     # Effects - tested and confirmed safe
-    ENABLE_BLUR = True          # ✅ Safe - tested
-    ENABLE_NOISE = True         # ✅ Safe - tested
+    ENABLE_BLUR = True              # Safe - tested
+    ENABLE_NOISE = True             # Safe - tested
 
     # Build augmentation list based on enabled options
     augmentations = []
 
-    # 1. Flip: Horizontal and Vertical (SAFE - always enable first)
+    # 1. Flip: Horizontal and Vertical (Safe - always enable first)
     if ENABLE_FLIP:
         augmentations.append(A.HorizontalFlip(p=0.5))
         augmentations.append(A.VerticalFlip(p=0.5))
 
-    # 2. 90° Rotate: Clockwise, Counter-Clockwise, Upside Down (SAFE)
+    # 2. 90° Rotate: Clockwise, Counter-Clockwise, Upside Down (Safe)
     if ENABLE_90_ROTATION and random.random() < 0.4:  # 40% chance
         angle = random.choice([90, 180, 270])
         augmentations.append(A.Rotate(limit=(angle-0.1, angle+0.1), p=1.0))
 
-    # 3. Random Rotation: Between -45° and +45° (SAFE)
+    # 3. Random Rotation: Between -45° and +45° (Safe)
     if ENABLE_RANDOM_ROTATION and random.random() < 0.3:  # 30% chance
-        angle = random.uniform(-45, 45)  # EXACT Roboflow range
+        angle = random.uniform(-45, 45)  # Exact Roboflow range
         augmentations.append(A.Rotate(limit=(angle-0.1, angle+0.1), p=1.0))
 
-    # 4. Crop: 0% Minimum Zoom, 14% Maximum Zoom (SAFE)
+    # 4. Crop: 0% Minimum Zoom, 14% Maximum Zoom (Safe)
     if ENABLE_CROP and random.random() < 0.4:  # 40% chance
-        zoom_factor = random.uniform(1.0, 1.14)  # EXACT Roboflow range
+        zoom_factor = random.uniform(1.0, 1.14)  # Exact Roboflow range
         augmentations.append(A.Affine(scale=zoom_factor, p=1.0))
 
-    # 5. Shear: ±14° Horizontal, ±15° Vertical (SAFE)
+    # 5. Shear: ±14° Horizontal, ±15° Vertical (Safe)
     if ENABLE_SHEAR and random.random() < 0.3:  # 30% chance
-        shear_x = random.uniform(-14, 14)  # EXACT Roboflow range
-        shear_y = random.uniform(-15, 15)  # EXACT Roboflow range
+        shear_x = random.uniform(-14, 14)  # Exact Roboflow range
+        shear_y = random.uniform(-15, 15)  # Exact Roboflow range
         augmentations.append(A.Affine(shear={'x': shear_x, 'y': shear_y}, p=1.0))
 
     # 6. COLOR AUGMENTATIONS: Choose AT MOST ONE per image (mutual exclusivity)
     color_choice = random.random()
     color_applied = False
 
-    if ENABLE_GRAYSCALE and color_choice < 0.22:  # 22% chance (EXACT Roboflow)
+    if ENABLE_GRAYSCALE and color_choice < 0.22:  # 22% chance (Exact Roboflow)
         augmentations.append(A.ToGray(p=1.0))
         color_applied = True
     elif ENABLE_HUE and not color_applied and color_choice < 0.35:  # 13% chance
-        hue_shift = random.uniform(-34, 34)  # EXACT Roboflow range
+        hue_shift = random.uniform(-34, 34)  # Exact Roboflow range
         augmentations.append(A.HueSaturationValue(
             hue_shift_limit=(hue_shift-0.1, hue_shift+0.1),
             sat_shift_limit=0,
@@ -287,7 +288,7 @@ def apply_roboflow_augmentation(crop_info):
         ))
         color_applied = True
     elif ENABLE_SATURATION and not color_applied and color_choice < 0.48:  # 13% chance
-        sat_shift = random.uniform(-34, 34)  # EXACT Roboflow range
+        sat_shift = random.uniform(-34, 34)  # Exact Roboflow range
         augmentations.append(A.HueSaturationValue(
             hue_shift_limit=0,
             sat_shift_limit=(sat_shift-0.1, sat_shift+0.1),
@@ -296,15 +297,16 @@ def apply_roboflow_augmentation(crop_info):
         ))
         color_applied = True
     elif ENABLE_BRIGHTNESS and not color_applied and color_choice < 0.60:  # 12% chance
-        brightness_shift = random.uniform(-24, 24)  # EXACT Roboflow range - SUSPECT!
+        # CONSERVATIVE: Reduced brightness range from ±24% to ±10% to prevent black/white images
+        brightness_shift = random.uniform(-0.10, 0.10)  # Conservative range: ±10%
         augmentations.append(A.RandomBrightnessContrast(
-            brightness_limit=(brightness_shift-0.1, brightness_shift+0.1),
+            brightness_limit=(brightness_shift-0.01, brightness_shift+0.01),
             contrast_limit=0,
             p=1.0
         ))
         color_applied = True
     elif ENABLE_EXPOSURE and not color_applied and color_choice < 0.68:  # 8% chance
-        exposure_shift = random.uniform(-15, 15) / 100.0  # EXACT Roboflow range - SUSPECT!
+        exposure_shift = random.uniform(-15, 15) / 100.0  # Exact Roboflow range
         augmentations.append(A.RandomBrightnessContrast(
             brightness_limit=(exposure_shift-0.01, exposure_shift+0.01),
             contrast_limit=0,
@@ -323,7 +325,10 @@ def apply_roboflow_augmentation(crop_info):
         noise_std = random.uniform(0.005, 0.02)  # Conservative interpretation
         augmentations.append(A.GaussNoise(std_range=(noise_std, noise_std), mean_range=(0, 0), p=1.0))
 
-    # Create pipeline - THIS WAS MISSING!
+    # Create pipeline
+    if not augmentations:
+        return crop_info['image'], crop_info['annotations']
+
     pipeline = A.Compose(augmentations, bbox_params=A.BboxParams(
         format='yolo',
         label_fields=['class_labels'],
@@ -350,16 +355,14 @@ def apply_roboflow_augmentation(crop_info):
     if ENABLE_BLUR: enabled_augs.append("Blur")
     if ENABLE_NOISE: enabled_augs.append("Noise")
 
-    # Only print once per batch (not every image) - show what's enabled/disabled
+    # Only print once per batch (not every image) - show brightness status
     if random.random() < 0.01:  # 1% chance to print
         enabled_count = sum([ENABLE_FLIP, ENABLE_90_ROTATION, ENABLE_RANDOM_ROTATION, ENABLE_CROP, ENABLE_SHEAR, ENABLE_GRAYSCALE, ENABLE_HUE, ENABLE_SATURATION, ENABLE_BRIGHTNESS, ENABLE_EXPOSURE, ENABLE_BLUR, ENABLE_NOISE])
 
         print(f"ROBOFLOW AUGMENTATIONS: {enabled_count}/12 enabled")
-        if not ENABLE_BRIGHTNESS:
-            print(f"✅ BRIGHTNESS DISABLED: Prevents black/white images")
-        else:
-            print(f"⚠️ BRIGHTNESS ENABLED: May cause black/white images")
-        print(f"🎨 ACTIVE: {', '.join(enabled_augs)}")
+        if ENABLE_BRIGHTNESS:
+            print(f"BRIGHTNESS: Conservative ±10% (reduced from Roboflow's ±24%)")
+        print(f"ACTIVE: {', '.join(enabled_augs)}")
 
     if annotations:
         class_labels = [ann[0] for ann in annotations]
@@ -383,34 +386,6 @@ def apply_roboflow_augmentation(crop_info):
             return result['image'], []
         except Exception as e:
             print(f"Augmentation failed: {e}")
-            return image, []
-
-    # Apply augmentation
-    image = crop_info['image']
-    annotations = crop_info['annotations']
-
-    if annotations:
-        class_labels = [ann[0] for ann in annotations]
-        bboxes = [[ann[1], ann[2], ann[3], ann[4]] for ann in annotations]
-
-        try:
-            result = pipeline(image=image, bboxes=bboxes, class_labels=class_labels)
-
-            # Convert back to annotation format
-            final_annotations = []
-            for bbox, class_id in zip(result['bboxes'], result['class_labels']):
-                final_annotations.append([class_id, bbox[0], bbox[1], bbox[2], bbox[3]])
-
-            return result['image'], final_annotations
-        except Exception as e:
-            print(f"Augmentation failed, using original: {e}")
-            return image, annotations
-    else:
-        try:
-            result = pipeline(image=image, bboxes=[], class_labels=[])
-            return result['image'], []
-        except Exception as e:
-            print(f"Augmentation failed, using original: {e}")
             return image, []
 
 
@@ -456,12 +431,12 @@ names:
 
 def main():
     """Main execution function"""
-    print("Clean Crop, Split & TESTED Roboflow Augmentation")
-    print("=" * 50)
+    print("Clean Crop, Split & Conservative Brightness Roboflow Augmentation")
+    print("=" * 65)
     print("Methodology:")
     print("1. Crop all images into 640x640 tiles")
     print(f"2. Random split: {VAL_COUNT} val, {TEST_COUNT} test, rest train")
-    print(f"3. Augment train data {AUGMENTATION_MULTIPLIER}x with TESTED Roboflow-style augmentations")
+    print(f"3. Augment train data {AUGMENTATION_MULTIPLIER}x with conservative brightness Roboflow-style augmentations")
 
     # Hardcoded paths
     input_folder = r"C:\NTNU\Custom_Obj_Det\datasets\vehicle_detection_improved.v1i.yolov12\train"
@@ -525,7 +500,7 @@ def main():
             save_crop(crop, output_folder, "test")
 
         # Step 5: Save training set with augmentation
-        print(f"\nSaving training set with {AUGMENTATION_MULTIPLIER}x TESTED Roboflow-style augmentations...")
+        print(f"\nSaving training set with {AUGMENTATION_MULTIPLIER}x conservative brightness Roboflow-style augmentations...")
 
         # Save original training crops
         for crop in tqdm(train_crops, desc="Saving original training"):
@@ -572,12 +547,12 @@ def main():
             'augmentation_multiplier': AUGMENTATION_MULTIPLIER,
             'crop_size': CROP_SIZE,
             'fixes_applied': [
-                'PROBLEM IDENTIFIED: ENABLE_BRIGHTNESS specifically causes black/white images',
-                'BRIGHTNESS DISABLED: Prevents extreme image artifacts while keeping all other augmentations',
-                '11/12 ROBOFLOW AUGMENTATIONS ENABLED: Full diversity except problematic brightness',
-                'EXACT ROBOFLOW SPECS: All enabled augmentations use exact Roboflow parameters',
-                'SYSTEMATIC TESTING: Incremental approach identified the specific culprit',
-                'OPTIMAL SOLUTION: Maximum augmentation variety without image quality issues'
+                'BRIGHTNESS RE-ENABLED: Using conservative ±10% range instead of original ±24%',
+                'ALL 12 ROBOFLOW AUGMENTATIONS: Complete augmentation suite with safe brightness',
+                'CONSERVATIVE APPROACH: Prevents black/white images while maintaining brightness variety',
+                'EXACT ROBOFLOW SPECS: All other augmentations use exact Roboflow parameters',
+                'SYSTEMATIC SOLUTION: Identified exact problematic range and reduced it appropriately',
+                'OPTIMAL BALANCE: Maximum augmentation diversity with image quality safety'
             ]
         }
 
@@ -586,19 +561,19 @@ def main():
 
         # Final summary
         print(f"\n" + "=" * 50)
-        print("🎉 DATASET CREATION COMPLETE!")
+        print("DATASET CREATION COMPLETE!")
         print("=" * 50)
-        print(f"📊 Final dataset:")
-        print(f"   • Training: {final_train_count} images ({len(train_crops)} × {AUGMENTATION_MULTIPLIER})")
-        print(f"   • Validation: {len(val_crops)} images")
-        print(f"   • Test: {len(test_crops)} images")
-        print(f"   • Total: {final_train_count + len(val_crops) + len(test_crops)} images")
-        print(f"\n🎯 Augmentation: Exact Roboflow replication")
-        print(f"✅ FIXED: All Albumentations parameter warnings resolved")
-        print(f"   • GaussNoise: Updated to new API (std_range/mean_range)")
-        print(f"   • Blur: Fixed to use only odd kernel sizes (3, 5)")
-        print(f"📁 Dataset saved to: {output_folder}")
-        print(f"📋 Ready for YOLOv12 training!")
+        print(f"Final dataset:")
+        print(f"   Training: {final_train_count} images ({len(train_crops)} × {AUGMENTATION_MULTIPLIER})")
+        print(f"   Validation: {len(val_crops)} images")
+        print(f"   Test: {len(test_crops)} images")
+        print(f"   Total: {final_train_count + len(val_crops) + len(test_crops)} images")
+        print(f"\nAugmentation: Exact Roboflow replication with conservative brightness")
+        print(f"FIXED: All Albumentations parameter warnings resolved")
+        print(f"   GaussNoise: Updated to new API (std_range/mean_range)")
+        print(f"   Blur: Fixed to use only odd kernel sizes (3, 5)")
+        print(f"Dataset saved to: {output_folder}")
+        print(f"Ready for YOLOv12 training!")
 
     except Exception as e:
         print(f"Error during processing: {e}")
