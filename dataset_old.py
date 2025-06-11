@@ -297,8 +297,7 @@ def apply_roboflow_augmentation(crop_info):
         ))
         color_applied = True
     elif ENABLE_BRIGHTNESS and not color_applied and color_choice < 0.60:  # 12% chance
-        # CONSERVATIVE: Reduced brightness range from ±24% to ±10% to prevent black/white images
-        brightness_shift = random.uniform(-0.10, 0.10)  # Conservative range: ±10%
+        brightness_shift = random.uniform(-0.24, 0.24)  # Exact Roboflow range
         augmentations.append(A.RandomBrightnessContrast(
             brightness_limit=(brightness_shift-0.01, brightness_shift+0.01),
             contrast_limit=0,
