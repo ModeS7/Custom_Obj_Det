@@ -11,7 +11,7 @@ from PIL import Image
 import json
 
 # Configuration
-TARGET_TEST_TILES = 55  # Back to higher targets with aggressive approach
+TARGET_TEST_TILES = 30  # Back to higher targets with aggressive approach
 TARGET_VAL_TILES = 0  # Back to higher targets
 TILE_SIZE = 640
 STRIP_WIDTH = 640

@@ -29,7 +29,7 @@ from ultralytics import YOLO
 def setup_dataset():
     """Setup dataset paths and create dataset.yaml"""
     # Your dataset path
-    LOCAL_DATASET_PATH = r"C:\NTNU\Custom_Obj_Det\datasets\My First Project.v2i.yolov12"
+    LOCAL_DATASET_PATH = r"C:\NTNU\Custom_Obj_Det\datasets\dataset_minimal"
 
     print(f"Setting up dataset at: {LOCAL_DATASET_PATH}")
 
@@ -59,7 +59,7 @@ def setup_dataset():
     yaml_data = {
         'path': dataset_path_yaml,
         'train': 'train/images',
-        'val': 'test/images',    # Using test as validation since no val folder exists
+        'val': 'val/images',    # Using test as validation since no val folder exists
         'test': 'test/images',
         'nc': 1,
         'names': {0: 'vehicle'}
@@ -95,10 +95,10 @@ def train_model(data_yaml_path, weights_file):
     print(f"✓ Loaded model: {weights_file}")
 
     # Training configuration - optimized for RTX 3090
-    epochs = 100
+    epochs = 300
     batch_size = 16
     image_size = 640
-    patience = 20
+    patience = 60
 
     # Output directory
     save_dir = r"C:\NTNU\Custom_Obj_Det\yolov12_training"
@@ -118,6 +118,9 @@ def train_model(data_yaml_path, weights_file):
         batch=batch_size,
         imgsz=image_size,
         patience=patience,
+        workers=24,
+        amp=True,            # Enable mixed precision training
+        cache=True,          # Cache dataset for faster loading
         scale=0.5,           # Model-specific augmentation parameter
         mosaic=1.0,
         mixup=0.0,
@@ -135,6 +138,7 @@ def train_model(data_yaml_path, weights_file):
         close_mosaic=10,     # Disable mosaic augmentation in final epochs
         seed=0,              # For reproducibility
         device=0,            # Use GPU 0 (RTX 3090)
+        auto_augment='augmix',   # Enable auto augmentation
     )
 
     print("✅ Training completed!")

@@ -1,17 +1,18 @@
 """
 Random Crop Augmentation Script for Satellite Vehicle Detection
 
-Generates 600 diverse 640x640 training crops with optimized augmentation sequence:
+Generates 2400 diverse 640x640 training crops with optimized augmentation sequence:
 1. Mirror (flip) - 50% chance
 2. Rotate 100% - random 0-360 degrees
-3. Shear 100% - random intensity and direction
-4. Photometric augmentations - 100% probability
+3. Shear 100% - ±15° intensity (UPDATED: reduced from ±30°)
+4. Enhanced photometric augmentations - 100% probability (UPDATED: added hue/saturation/exposure/grayscale)
 
 Features:
 - Area-weighted image selection (larger images more likely)
 - Normal distribution scaling (μ=1.0, σ=0.2)
 - Smart annotation handling (50% minimum visibility)
 - Satellite-optimized augmentation parameters
+- Roboflow-inspired color augmentations
 """
 
 import os
@@ -219,82 +220,103 @@ def transform_annotations_for_crop(annotations, crop_x, crop_y, crop_size, origi
     return transformed
 
 
-def apply_photometric_augmentations_normal_dist(image):
-    """Apply photometric augmentations using normal distribution
+def apply_enhanced_photometric_augmentations(image):
+    """Enhanced photometric augmentations matching Roboflow's approach
 
-    All adjustments use normal distribution centered at neutral values:
-    - Most images get little change (around neutral)
-    - Some images get moderate changes
-    - Few images get extreme changes (at clipping limits)
+    NEW: Added Hue, Saturation, Exposure, and Grayscale conversion
+    KEPT: Your normal distribution approach for natural-looking results
     """
 
     # Convert to float for processing
     img_float = image.astype(np.float32) / 255.0
 
-    # ✅ BRIGHTNESS: Normal distribution around 0, most images get little change
-    brightness_delta = np.random.normal(0, 0.1)  # Mean=0, std=0.1 (wider spread)
-    brightness_delta = np.clip(brightness_delta, -0.20, 0.20)  # Clip extremes
+    # ✅ EXISTING: BRIGHTNESS (keep your approach but match Roboflow's range)
+    brightness_delta = np.random.normal(0, 0.08)  # Slightly reduced std
+    brightness_delta = np.clip(brightness_delta, -0.24, 0.24)  # Match Roboflow's ±24%
     img_float = np.clip(img_float + brightness_delta, 0, 1)
 
-    # ✅ CONTRAST: Normal distribution around 1.0, most images get little change
-    contrast_factor = np.random.normal(1.0, 0.1)  # Mean=1.0 (neutral), std=0.1
-    contrast_factor = np.clip(contrast_factor, 0.80, 1.20)  # Clip extremes (1.0 ± 0.15)
+    # ✅ EXISTING: CONTRAST (keep your approach)
+    contrast_factor = np.random.normal(1.0, 0.1)
+    contrast_factor = np.clip(contrast_factor, 0.80, 1.20)
     img_float = np.clip(img_float * contrast_factor, 0, 1)
 
-    # Convert back to uint8
+    # Convert back to uint8 for color space operations
     img_uint8 = (img_float * 255).astype(np.uint8)
 
-    # ✅ NOISE: Normal distribution around 0, most images get little noise
-    noise_std = abs(np.random.normal(0, 8.0))  # Mean=0, std=8, take absolute value
-    noise_std = np.clip(noise_std, 0, 20.0)    # Cap maximum noise
+    # 🆕 NEW: HUE AND SATURATION (matching Roboflow: ±34° hue, ±34% saturation)
+    hue_shift = np.random.normal(0, 12)  # Normal dist around 0
+    hue_shift = np.clip(hue_shift, -34, 34)  # Match Roboflow
 
-    # Apply noise to image
+    saturation_factor = np.random.normal(1.0, 0.12)  # Normal dist around 1.0
+    saturation_factor = np.clip(saturation_factor, 0.66, 1.34)  # ±34%
+
+    # Apply hue and saturation using OpenCV
+    img_hsv = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+    # Apply hue shift
+    img_hsv[:, :, 0] = (img_hsv[:, :, 0] + hue_shift) % 180
+
+    # Apply saturation adjustment
+    img_hsv[:, :, 1] = np.clip(img_hsv[:, :, 1] * saturation_factor, 0, 255)
+
+    img_uint8 = cv2.cvtColor(img_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+    # 🆕 NEW: EXPOSURE (matching Roboflow: ±15%)
+    exposure_factor = np.random.normal(1.0, 0.05)  # Normal dist around 1.0
+    exposure_factor = np.clip(exposure_factor, 0.85, 1.15)  # ±15%
+
+    img_float = img_uint8.astype(np.float32) / 255.0
+    img_float = np.clip(img_float * exposure_factor, 0, 1)
+    img_uint8 = (img_float * 255).astype(np.uint8)
+
+    # 🆕 NEW: GRAYSCALE CONVERSION (matching Roboflow: 22% chance)
+    if random.random() < 0.22:  # 22% chance like Roboflow
+        # Convert to grayscale and back to RGB
+        gray = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2GRAY)
+        img_uint8 = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+
+    # ✅ EXISTING: NOISE (keep your approach but slightly reduced)
+    noise_std = abs(np.random.normal(0, 6.0))  # Slightly reduced
+    noise_std = np.clip(noise_std, 0, 15.0)    # Reduced max noise
+
     noise = np.random.normal(0, noise_std, img_uint8.shape).astype(np.float32)
     img_with_noise = img_uint8.astype(np.float32) + noise
     img_with_noise = np.clip(img_with_noise, 0, 255).astype(np.uint8)
 
-    # ✅ BLUR/SHARPENING: Single normal distribution - negative=blur, positive=sharpen
-    blur_sharpen_factor = np.random.normal(0, 3.0)  # Mean=0, std=3
-    blur_sharpen_factor = np.clip(blur_sharpen_factor, -5.0, 5.0)  # Clip extremes
+    # ✅ EXISTING: BLUR/SHARPENING (keep your approach but match Roboflow's blur limit)
+    blur_sharpen_factor = np.random.normal(0, 2.0)  # Reduced intensity
+    blur_sharpen_factor = np.clip(blur_sharpen_factor, -3.1, 3.0)  # Match Roboflow's 3.1px blur
 
-    if blur_sharpen_factor < -0.3:  # Negative side: Apply blur
-        # Convert factor to blur kernel size (larger negative = more blur)
+    if blur_sharpen_factor < -0.3:  # Apply blur
         blur_intensity = abs(blur_sharpen_factor)
-        blur_kernel = int(3 + blur_intensity * 2)  # Scale 3-11 based on intensity
+        blur_kernel = int(3 + blur_intensity * 1.5)  # Reduced scaling
 
-        # Ensure odd kernel size
         if blur_kernel % 2 == 0:
             blur_kernel += 1
 
-        # Clip to reasonable range
-        blur_kernel = min(blur_kernel, 11)
-
+        blur_kernel = min(blur_kernel, 7)  # Reduced max kernel (was 11)
         final_img = cv2.GaussianBlur(img_with_noise, (blur_kernel, blur_kernel), 0)
 
-    elif blur_sharpen_factor > 0.3:  # Positive side: Apply sharpening
-        # Convert factor to sharpening intensity
-        sharpen_alpha = min(blur_sharpen_factor * 0.15, 0.6)  # Scale to reasonable range
+    elif blur_sharpen_factor > 0.3:  # Apply sharpening
+        sharpen_alpha = min(blur_sharpen_factor * 0.1, 0.4)  # Reduced intensity
 
-        # Create sharpening kernel
         kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
         sharpened = cv2.filter2D(img_with_noise, -1, kernel)
-
-        # Blend with original based on intensity
         final_img = cv2.addWeighted(img_with_noise, 1 - sharpen_alpha, sharpened, sharpen_alpha, 0)
 
-    else:  # Around 0: No blur or sharpening (most images - natural sharpness)
+    else:  # No blur or sharpening
         final_img = img_with_noise
 
     return final_img
 
 
 def apply_augmentations(image, annotations):
-    """Apply geometric and photometric augmentations in your specified order:
+    """Apply geometric and photometric augmentations in your proven sequence:
 
     1. Mirror (flip) - 50% chance (exact transform, no quality loss)
-    2. Rotate 100% - 0-360 degrees (on clean/flipped image)
-    3. Shear 100% - random intensity and direction (final interpolation step)
-    4. Photometric augmentations
+    2. Rotate 100% - 0-360 degrees (perfect for satellite imagery)
+    3. Shear 100% - ±15° intensity (UPDATED: reduced from ±30°)
+    4. Enhanced photometric augmentations (UPDATED: added hue/saturation/exposure/grayscale)
     """
 
     # ✅ STEP 1: Mirror (flip) with 50% chance - exact transform first
@@ -305,13 +327,13 @@ def apply_augmentations(image, annotations):
         augmented_image, augmented_annotations
     )
 
-    # ✅ STEP 3: Shear 100% - random intensity and direction
+    # ✅ STEP 3: Shear 100% - UPDATED: reduced to ±15° intensity
     augmented_image, augmented_annotations = apply_random_shear(
         augmented_image, augmented_annotations
     )
 
-    # ✅ STEP 4: Photometric augmentations (100% probability with normal distribution)
-    final_image = apply_photometric_augmentations_normal_dist(augmented_image)
+    # ✅ STEP 4: ENHANCED photometric augmentations
+    final_image = apply_enhanced_photometric_augmentations(augmented_image)
 
     return final_image, augmented_annotations
 
@@ -393,20 +415,16 @@ def apply_full_rotation(image, annotations):
 def apply_random_shear(image, annotations):
     """Apply shear 100% - random intensity and direction using normal distribution
 
-    Shear transforms create parallelogram distortions by moving one edge
-    of the image relative to the opposite edge. This simulates perspective
-    changes common in satellite imagery due to viewing angle variations.
-
-    Uses normal distribution: most images get light shear, few get extreme shear.
+    UPDATED: Reduced to ±15° to match Roboflow's conservative approach
     """
 
-    # ✅ IMPROVED: Normal distribution around 0° (most images get little shear)
-    shear_x = np.random.normal(0, 8.0)  # Mean=0°, std=8°
-    shear_y = np.random.normal(0, 8.0)  # Mean=0°, std=8°
+    # ✅ IMPROVED: Normal distribution around 0° with reduced intensity
+    shear_x = np.random.normal(0, 5.0)  # Mean=0°, std=5° (reduced from 8°)
+    shear_y = np.random.normal(0, 5.0)  # Mean=0°, std=5° (reduced from 8°)
 
-    # Clip to reasonable extremes
-    shear_x = np.clip(shear_x, -30, 30)
-    shear_y = np.clip(shear_y, -30, 30)
+    # Clip to conservative extremes (matching Roboflow: ±14°/±15°)
+    shear_x = np.clip(shear_x, -15, 15)  # Reduced from -30, 30
+    shear_y = np.clip(shear_y, -15, 15)  # Reduced from -30, 30
 
     # Randomly decide to apply shear in x, y, or both directions
     apply_x = random.random() < 0.7  # 70% chance for x-shear
@@ -427,8 +445,8 @@ def apply_random_shear(image, annotations):
 
     shear_pipeline = A.Compose([
         A.Affine(
-            shear={'x': shear_x, 'y': shear_y},  # Apply shear in both directions
-            p=1.0,  # 100% probability
+            shear={'x': shear_x, 'y': shear_y},
+            p=1.0,
             border_mode=cv2.BORDER_CONSTANT,
             fill=0
         ),
@@ -556,8 +574,8 @@ def save_statistics(output_folder, generation_stats, successful_crops):
 
 def main():
     """Main execution function"""
-    print("Random Crop Augmentation Script")
-    print("=" * 40)
+    print("Enhanced Random Crop Augmentation Script")
+    print("=" * 45)
     print(f"Target: {TARGET_IMAGES} augmented images")
     print(f"Crop size: {CROP_SIZE}x{CROP_SIZE}")
     print(f"Scale range: {MIN_SCALE:.1f}x - {MAX_SCALE:.1f}x (μ={SCALE_MEAN:.1f}, σ={SCALE_STD:.1f})")
@@ -595,31 +613,33 @@ def main():
         # Create output structure
         images_dir, labels_dir = create_output_structure(output_folder)
 
-        # No pipeline creation needed - augmentations applied directly in apply_augmentations()
-
         # Generate random crops
-        print(f"\nGenerating {TARGET_IMAGES} random crops with your specified augmentation sequence:")
+        print(f"\nGenerating {TARGET_IMAGES} random crops with ENHANCED augmentation sequence:")
         print("✅ 1. Mirror (flip) - 50% chance (exact transform)")
-        print("✅ 2. Rotate 100% - random 0-360 degrees")
-        print("✅ 3. Shear 100% - random intensity and direction")
-        print(f"✅ 4. Photometric augmentations - All use normal distribution around neutral:")
-        print(f"    • Brightness: Most neutral, some bright/dark")
-        print(f"    • Contrast: Most neutral, some high/low")
-        print(f"    • Noise: Most clean, some noisy")
-        print(f"    • Blur/Sharpen: Most natural, some blurred OR sharpened (never both)")
+        print("✅ 2. Rotate 100% - random 0-360 degrees (perfect for satellite)")
+        print("✅ 3. Shear 100% - ±15° intensity (UPDATED: reduced from ±30°)")
+        print("✅ 4. Enhanced photometric augmentations (NEW: Roboflow-inspired):")
+        print("    • Brightness: ±24% (normal distribution)")
+        print("    • Contrast: ±20% (normal distribution)")
+        print("    • 🆕 Hue: ±34° (normal distribution)")
+        print("    • 🆕 Saturation: ±34% (normal distribution)")
+        print("    • 🆕 Exposure: ±15% (normal distribution)")
+        print("    • 🆕 Grayscale: 22% chance (like Roboflow)")
+        print("    • Noise: Variable intensity (normal distribution)")
+        print("    • Blur/Sharpen: Max 3.1px blur OR sharpening (never both)")
 
         successful_crops = []
         zero_annotation_count = 0
         generation_stats = {'attempts': 0}
 
-        with tqdm(total=TARGET_IMAGES, desc="Generating crops") as pbar:
+        with tqdm(total=TARGET_IMAGES, desc="Generating enhanced crops") as pbar:
             while len(successful_crops) < TARGET_IMAGES:
                 generation_stats['attempts'] += 1
 
                 # Select image based on area weights
                 selected_image = weighted_random_selection(image_info_list)
 
-                # Generate random crop with your specified augmentation sequence
+                # Generate random crop with enhanced augmentation sequence
                 aug_image, aug_annotations, metadata = generate_random_crop(selected_image)
 
                 if aug_image is None:
@@ -683,16 +703,19 @@ names:
             f.write(yaml_content)
 
         # Final summary
-        print(f"\n" + "=" * 50)
-        print("AUGMENTED DATASET GENERATION COMPLETE!")
-        print("=" * 50)
+        print(f"\n" + "=" * 60)
+        print("🎉 ENHANCED AUGMENTED DATASET GENERATION COMPLETE!")
+        print("=" * 60)
         print(f"Generated: {len(successful_crops)} augmented images")
         print(f"Success rate: {stats['success_rate']:.1%}")
-        print(f"Augmentation sequence applied to each crop:")
+        print(f"ENHANCED augmentation sequence applied to each crop:")
         print(f"  1. Mirror (flip): 50% chance")
         print(f"  2. Rotation: 100% (0-360°)")
-        print(f"  3. Shear: 100% (random intensity/direction)")
-        print(f"  4. Photometric: 100% (brightness/contrast/noise normal dist + blur OR sharpen)")
+        print(f"  3. Shear: 100% (±15° - reduced intensity)")
+        print(f"  4. Photometric: 100% with NEW color augmentations:")
+        print(f"     • Hue/Saturation/Exposure like Roboflow")
+        print(f"     • 22% grayscale conversion")
+        print(f"     • Natural normal distributions")
         print(
             f"Zero-annotation crops: {stats['zero_annotation_crops']} ({stats['zero_annotation_crops'] / len(successful_crops) * 100:.1f}%)")
         print(
@@ -700,6 +723,7 @@ names:
         print(f"Average scale: {stats['scale_factor_stats']['mean']:.2f} ± {stats['scale_factor_stats']['std']:.2f}")
         print(f"\nDataset saved to: {output_folder}")
         print(f"Check generation_statistics.json for detailed breakdown")
+        print(f"\n🚀 This enhanced version should perform much closer to Roboflow!")
 
     except Exception as e:
         print(f"Error during processing: {e}")
